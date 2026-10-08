@@ -37,6 +37,8 @@
   .chk input { width:auto; }
   .scroll { overflow:auto; }
   h3 { margin:16px 0 8px; font-size:15px; }
+  .renum { margin-top:4px; max-width:110px; }
+  td input + input { margin-top:4px; }
 </style>
 </head>
 <body>
@@ -45,7 +47,7 @@
   <nav id="nav" hidden>
     <button type="button" data-tab="promo" class="on">Повышение</button>
     <button type="button" data-tab="vyg">Выговоры</button>
-    <button type="button" data-tab="orders">Приказы</button>
+    <button type="button" data-tab="orders">Документы</button>
     <button type="button" data-tab="who">Кто отправил</button>
     <button type="button" id="logout">Выйти</button>
   </nav>
@@ -222,7 +224,31 @@ async function saveRules(){
   } catch (e) { say(e.message, true); }
 }
 
+const DOCS = {
+  orders: "Приказы: выговор и предупреждение (ВГ, ПР)",
+  raport: "Рапорты на взыскание (ВП)",
+  promo: "Рапорты на повышение (ПВ)",
+  week: "Еженедельные отчёты (ОТ)",
+  papers: "Все рапорты и отчёты (ВП, ПВ, ОТ)"
+};
+const PAPER_NAME = { raport: "Рапорт", promo: "Повышение", week: "Отчёт" };
+let docKind = "orders";
+function numDigits(num){ const m = /(\d+)\s*$/.exec(String(num || "")); return m ? String(Number(m[1])) : ""; }
+function renumCell(o){
+  return `<td><span class="num-text">${esc(o.num)}</span>
+    <input class="renum" inputmode="numeric" placeholder="новый №" title="Впиши цифры, только если этому документу нужен другой номер. Пусто — номер не меняется."></td>`;
+}
+function docHead(){
+  return `<div class="row">
+    <div><label>Какие документы</label><select id="docKind">${Object.entries(DOCS).map(([k, v]) => `<option value="${k}"${k === docKind ? " selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
+  </div>
+  <p class="hint">Здесь правятся все документы, которым база выдала номер. «Сохранить» меняет только эту строку. Номер меняется, только если вписать цифры в «новый №»: префикс подставится сам, другие документы не перенумеровываются. Удаление убирает одну запись, остальные номера остаются как были.</p>`;
+}
+function bindDocHead(){
+  $("docKind").onchange = () => { docKind = $("docKind").value; renderOrders(); };
+}
 async function renderOrders(){
+  if (docKind !== "orders") return renderPapers();
   const passport = ($("q") && $("q").value.trim()) || "";
   let data, seq;
   try {
@@ -232,7 +258,8 @@ async function renderOrders(){
     ]);
   } catch (e) { say(e.message, true); return; }
   const rows = data.orders || [];
-  $("orders").innerHTML = `<div class="card"><h2>Журнал приказов</h2>
+  $("orders").innerHTML = `<div class="card"><h2>Документы</h2>${docHead()}
+    <h3>Журнал приказов</h3>
     <p class="hint">Удаление убирает запись из истории по паспорту. Следующий номер — это то, что получит новый приказ. Уже выданные номера сами не сдвигаются и не меняются.</p>
     <div class="row">
       <div><label>Следующий номер</label><input id="nextNum" class="narrow" type="number" value="${seq.next}"></div>
@@ -241,8 +268,9 @@ async function renderOrders(){
       <button class="btn" type="button" id="find">Найти</button>
     </div>
     <p class="hint">Сейчас занято до ${seq.last}. Следующий будет ${seq.next}.</p>
-    <table><thead><tr><th>Номер</th><th>Вид</th><th>Паспорт</th><th>Кому</th><th>Причина</th><th>Дата</th><th></th></tr></thead>
-    <tbody>${rows.map(orderRow).join("") || `<tr><td colspan="7" class="hint">Записей нет</td></tr>`}</tbody></table></div>`;
+    <div class="scroll"><table><thead><tr><th>Номер</th><th>Вид</th><th>Паспорт</th><th>Кому</th><th>Причина</th><th>Дата</th><th></th></tr></thead>
+    <tbody>${rows.map(orderRow).join("") || `<tr><td colspan="7" class="hint">Записей нет</td></tr>`}</tbody></table></div></div>`;
+  bindDocHead();
   $("saveSeq").onclick = async () => {
     try { await api("POST", "/admin/seq", { next: Number($("nextNum").value) }); say("Следующий номер обновлён."); renderOrders(); }
     catch (e) { say(e.message, true); }
@@ -257,7 +285,7 @@ async function renderOrders(){
 }
 function orderRow(o){
   return `<tr data-id="${o.id}">
-    <td class="num-text">${esc(o.num)}</td>
+    ${renumCell(o)}
     <td><select class="kind"><option value="vyg"${o.kind !== "pred" ? " selected" : ""}>Выговор</option><option value="pred"${o.kind === "pred" ? " selected" : ""}>Предупреждение</option></select></td>
     <td><input class="passport" value="${esc(o.passport)}"></td>
     <td><input class="rank" value="${esc(o.rank || "")}" placeholder="звание"><input class="name" value="${esc(o.name || "")}" placeholder="имя"><input class="unit" value="${esc(o.unit || "")}" placeholder="подразделение"></td>
@@ -266,13 +294,22 @@ function orderRow(o){
     <td><button class="btn save-order" type="button" data-id="${o.id}">Сохранить</button><button class="btn bad del-order" type="button" data-id="${o.id}" data-num="${esc(o.num)}">Удалить</button></td>
   </tr>`;
 }
+function readRenum(tr){
+  const raw = tr.querySelector(".renum").value.trim();
+  if (!raw) return "";
+  const d = raw.replace(/\D/g, "");
+  if (!d) throw new Error("В «новый №» нужны цифры");
+  const old = tr.querySelector(".num-text").textContent.trim();
+  if (String(Number(d)) === numDigits(old)) return "";
+  if (!confirm("Сменить номер " + old + " на " + String(Number(d)).padStart(4, "0") + "? Номер, уже ушедший в Discord, там не поменяется.")) throw new Error("Номер не меняли");
+  return d;
+}
 async function saveOrder(id){
-  const tr = document.querySelector(`tr[data-id="${id}"]`);
+  const tr = document.querySelector(`#orders tr[data-id="${id}"]`);
   const rank = tr.querySelector(".rank").value.trim();
   const name = tr.querySelector(".name").value.trim();
-  const num = tr.querySelector(".num-text").textContent.trim();
   try {
-    await api("PATCH", "/admin/orders", {
+    const body = {
       id: Number(id),
       kind: tr.querySelector(".kind").value,
       passport: tr.querySelector(".passport").value,
@@ -280,8 +317,81 @@ async function saveOrder(id){
       unit: tr.querySelector(".unit").value.trim(),
       reason: tr.querySelector(".reason").value.trim(),
       issued: tr.querySelector(".issued").value.trim()
-    });
-    say("Запись " + num + " сохранена.");
+    };
+    const num = readRenum(tr);
+    if (num) body.num = num;
+    const res = await api("PATCH", "/admin/orders", body);
+    if (res.num) { tr.querySelector(".num-text").textContent = res.num; tr.querySelector(".del-order").dataset.num = res.num; }
+    tr.querySelector(".renum").value = "";
+    say("Запись " + (res.num || "") + " сохранена.");
+  } catch (e) { say(e.message, true); }
+}
+
+async function renderPapers(){
+  const q = ($("pq") && $("pq").value.trim()) || "";
+  const kind = docKind === "papers" ? "" : docKind;
+  let data, seq;
+  try {
+    [data, seq] = await Promise.all([
+      api("GET", "/admin/papers?kind=" + encodeURIComponent(kind) + (q ? "&q=" + encodeURIComponent(q) : "")),
+      api("GET", "/admin/paper-seq")
+    ]);
+  } catch (e) { say(e.message, true); return; }
+  const rows = data.papers || [];
+  const s = kind && seq[kind] ? seq[kind] : null;
+  $("orders").innerHTML = `<div class="card"><h2>Документы</h2>${docHead()}
+    <h3>${esc(DOCS[docKind])}</h3>
+    <div class="row">
+      ${s ? `<div><label>Следующий номер</label><input id="nextPaper" class="narrow" type="number" value="${s.next}"></div>
+      <button class="btn gold" type="button" id="savePaperSeq">Поставить номер</button>` : ""}
+      <div><label>Поиск: имя, номер, паспорт или Discord</label><input id="pq" value="${esc(q)}" placeholder="все"></div>
+      <button class="btn" type="button" id="pfind">Найти</button>
+    </div>
+    ${s ? `<p class="hint">Сейчас выдано до ${s.last}. Следующий будет ${s.next}. Уже выданные номера сами не сдвигаются.</p>` : `<p class="hint">Следующий номер ставится, когда выбран один вид документа.</p>`}
+    <div class="scroll"><table><thead><tr><th>Номер</th><th>Вид</th><th>Имя в бланке</th><th>Звание</th><th>Паспорт</th><th>Примечание</th><th>Кто взял номер</th><th></th></tr></thead>
+    <tbody>${rows.map(paperRow).join("") || `<tr><td colspan="8" class="hint">Записей нет</td></tr>`}</tbody></table></div></div>`;
+  bindDocHead();
+  if (s) $("savePaperSeq").onclick = async () => {
+    try { await api("POST", "/admin/paper-seq", { kind, next: Number($("nextPaper").value) }); say("Следующий номер обновлён."); renderPapers(); }
+    catch (e) { say(e.message, true); }
+  };
+  $("pfind").onclick = renderPapers;
+  $("pq").addEventListener("keydown", e => { if (e.key === "Enter") renderPapers(); });
+  document.querySelectorAll(".save-paper").forEach(b => b.onclick = () => savePaper(b.dataset.id));
+  document.querySelectorAll(".del-paper").forEach(b => b.onclick = async () => {
+    if (!confirm("Удалить документ " + b.dataset.num + "? Остальные номера не сдвинутся.")) return;
+    try { await api("DELETE", "/admin/papers?id=" + b.dataset.id); say("Удалил."); renderPapers(); }
+    catch (e) { say(e.message, true); }
+  });
+}
+function paperRow(p){
+  return `<tr data-id="${p.id}">
+    ${renumCell(p)}
+    <td>${esc(PAPER_NAME[p.kind] || p.kind || "")}</td>
+    <td><input class="name" value="${esc(p.name || "")}" placeholder="имя"></td>
+    <td><input class="rank" value="${esc(p.rank || "")}" placeholder="звание"></td>
+    <td><input class="passport" value="${esc(p.passport || "")}" placeholder="цифры"></td>
+    <td><input class="note" value="${esc(p.note || "")}" placeholder="что исправлено"></td>
+    <td class="hint">${esc(p.discord_name || "")}${p.discord_id ? `<br>${esc(p.discord_id)}` : ""}<br>${esc(msk(p.created))}${p.edited ? `<br>правка ${esc(msk(p.edited))}` : ""}</td>
+    <td><button class="btn save-paper" type="button" data-id="${p.id}">Сохранить</button><button class="btn bad del-paper" type="button" data-id="${p.id}" data-num="${esc(p.num)}">Удалить</button></td>
+  </tr>`;
+}
+async function savePaper(id){
+  const tr = document.querySelector(`#orders tr[data-id="${id}"]`);
+  try {
+    const body = {
+      id: Number(id),
+      name: tr.querySelector(".name").value.trim(),
+      rank: tr.querySelector(".rank").value.trim(),
+      passport: tr.querySelector(".passport").value,
+      note: tr.querySelector(".note").value.trim()
+    };
+    const num = readRenum(tr);
+    if (num) body.num = num;
+    const res = await api("PATCH", "/admin/papers", body);
+    if (res.num) { tr.querySelector(".num-text").textContent = res.num; tr.querySelector(".del-paper").dataset.num = res.num; }
+    tr.querySelector(".renum").value = "";
+    say("Документ " + (res.num || "") + " сохранён.");
   } catch (e) { say(e.message, true); }
 }
 
