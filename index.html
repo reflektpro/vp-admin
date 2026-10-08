@@ -39,6 +39,9 @@
   h3 { margin:16px 0 8px; font-size:15px; }
   .renum { margin-top:4px; max-width:110px; }
   td input + input { margin-top:4px; }
+  .codebox { border:2px solid var(--gold); }
+  .codebox .code { font:600 22px/1.3 Consolas, "Courier New", monospace; letter-spacing:2px; color:var(--gold); margin:10px 0; user-select:all; word-break:break-all; }
+  .link { background:none; border:0; padding:0; color:var(--muted); text-decoration:underline; cursor:pointer; font:inherit; font-size:13px; }
 </style>
 </head>
 <body>
@@ -49,6 +52,7 @@
     <button type="button" data-tab="vyg">Выговоры</button>
     <button type="button" data-tab="orders">Документы</button>
     <button type="button" data-tab="who">Кто отправил</button>
+    <button type="button" id="passBtn">Сменить пароль</button>
     <button type="button" id="logout">Выйти</button>
   </nav>
 </header>
@@ -60,9 +64,31 @@
     <input id="pass" type="password" autocomplete="current-password">
     <div class="row" style="margin-top:12px"><button class="btn gold" id="enter" type="button">Войти</button></div>
     <div class="status" id="loginStatus"></div>
+    <button class="link" id="forgotBtn" type="button">Забыл пароль</button>
+    <div id="forgot" class="step" hidden>
+      <p class="hint">Нужен код сброса, который показывался один раз после первого входа. Регистр и дефисы не важны.</p>
+      <label>Код сброса</label>
+      <input id="fCode" autocomplete="off" spellcheck="false">
+      <label>Новый пароль (8–80 символов, латиница, цифры, знаки)</label>
+      <input id="fPass" type="password" autocomplete="new-password">
+      <label>Новый пароль ещё раз</label>
+      <input id="fPass2" type="password" autocomplete="new-password">
+      <div class="row" style="margin-top:12px"><button class="btn gold" id="fGo" type="button">Сбросить пароль</button></div>
+    </div>
   </section>
   <section id="app" hidden>
     <div class="status" id="status"></div>
+    <div id="recovery" class="card codebox" hidden></div>
+    <div id="passCard" class="card" hidden>
+      <h2>Сменить пароль</h2>
+      <p class="hint">8–80 символов: латиница, цифры, знаки, без пробелов по краям. После смены вход по новому паролю; эта вкладка останется в системе.</p>
+      <div class="row">
+        <div><label>Новый пароль</label><input id="np1" type="password" autocomplete="new-password"></div>
+        <div><label>Ещё раз</label><input id="np2" type="password" autocomplete="new-password"></div>
+        <button class="btn gold" type="button" id="npSave">Сохранить пароль</button>
+        <button class="btn" type="button" id="npCancel">Отмена</button>
+      </div>
+    </div>
     <div id="promo"></div>
     <div id="vyg" hidden></div>
     <div id="orders" hidden></div>
@@ -443,6 +469,69 @@ async function renderWho(){
 $("nav").onclick = e => { const b = e.target.closest("[data-tab]"); if (b) showTab(b.dataset.tab); };
 $("logout").onclick = () => { sessionStorage.removeItem("vp_admin"); location.reload(); };
 
+// Пароль админки. Те же правила, что в воркере: заголовок Authorization не пропустит кириллицу,
+// а поле входа обрезает пробелы по краям.
+function passError(p, p2){
+  if (p !== p2) return "Пароли не совпадают";
+  if (p.length < 8 || p.length > 80) return "Пароль от 8 до 80 символов";
+  if (!/^[\x20-\x7e]+$/.test(p)) return "Только латиница, цифры и знаки, без кириллицы";
+  if (!p.trim() || p !== p.trim()) return "Без пробелов в начале и в конце";
+  return "";
+}
+function closePass(){ $("np1").value = ""; $("np2").value = ""; $("passCard").hidden = true; }
+$("passBtn").onclick = () => { if ($("passCard").hidden) { $("passCard").hidden = false; $("np1").focus(); } else closePass(); };
+$("npCancel").onclick = closePass;
+$("npSave").onclick = async () => {
+  const p = $("np1").value, bad = passError(p, $("np2").value);
+  if (bad) { say(bad, true); return; }
+  try {
+    await api("POST", "/admin/password", { password: p });
+    sessionStorage.setItem("vp_admin", p);
+    closePass();
+    say("Пароль сменён. Входи теперь по новому.");
+  } catch (e) { say(e.message, true); }
+};
+// Код сброса: воркер отдаёт его один раз, сразу после первого входа. Нигде не сохраняется.
+let recoveryAsked = false;
+async function checkRecovery(){
+  if (recoveryAsked) return;
+  recoveryAsked = true;
+  let data;
+  try { data = await api("GET", "/admin/recovery"); } catch (e) { return; }
+  if (!data || !data.code) return;
+  const box = $("recovery");
+  box.innerHTML = `<h2>Запиши код сброса. Больше он не покажется.</h2>
+    <div class="code">${esc(data.code)}</div>
+    <p class="hint">Код нужен, если пароль утёк или забыт: «Забыл пароль» на странице входа. Храни его отдельно от пароля, не в этом браузере.</p>
+    <button class="btn gold" type="button" id="codeDone">Я записал</button>`;
+  box.hidden = false;
+  $("codeDone").onclick = () => {
+    if (!confirm("Код больше не покажется. Точно записал?")) return;
+    box.innerHTML = ""; box.hidden = true;
+  };
+}
+function loginSay(text, err){ $("loginStatus").textContent = text || ""; $("loginStatus").className = "status" + (err ? " err" : ""); }
+$("forgotBtn").onclick = () => { $("forgot").hidden = !$("forgot").hidden; if (!$("forgot").hidden) $("fCode").focus(); };
+$("fGo").onclick = async () => {
+  const code = $("fCode").value.trim(), p = $("fPass").value;
+  if (!code) { loginSay("Впиши код сброса", true); return; }
+  const bad = passError(p, $("fPass2").value);
+  if (bad) { loginSay(bad, true); return; }
+  try {
+    const res = await fetch(API + "/admin/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, password: p })
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(text || "Не получилось");
+  } catch (e) { loginSay(e.message, true); return; }
+  $("fCode").value = ""; $("fPass").value = ""; $("fPass2").value = ""; $("forgot").hidden = true;
+  loginSay("Пароль сброшен, вхожу…");
+  sessionStorage.setItem("vp_admin", p);
+  boot();
+};
+
 async function boot(){
   $("login").hidden = true; $("app").hidden = false; $("nav").hidden = false;
   say("Загружаю…");
@@ -457,7 +546,9 @@ async function boot(){
     $("loginStatus").textContent = e.message;
     $("loginStatus").className = "status err";
     sessionStorage.removeItem("vp_admin");
+    return;
   }
+  checkRecovery();
 }
 $("enter").onclick = () => { sessionStorage.setItem("vp_admin", $("pass").value.trim()); boot(); };
 $("pass").addEventListener("keydown", e => { if (e.key === "Enter") $("enter").click(); });
