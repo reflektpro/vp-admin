@@ -58,6 +58,13 @@
   </section>
   <section id="app" hidden>
     <div class="status" id="status"></div>
+    <div class="card" id="gateCard">
+      <h2>Пароль отправки</h2>
+      <p class="hint" id="gateStatus">Проверяю…</p>
+      <label>Новый пароль отправки</label>
+      <input id="gatePass" type="password" autocomplete="off">
+      <div class="row" style="margin-top:10px"><button class="btn gold" type="button" id="setGate">Поставить пароль</button></div>
+    </div>
     <div id="promo"></div>
     <div id="vyg" hidden></div>
     <div id="orders" hidden></div>
@@ -214,7 +221,7 @@ async function saveRules(){
   try {
     readPromo(); readVyg();
     await api("PUT", "/admin/rules", { promo, vygovor: vyg });
-    say("Сохранено. Сайт рапортов подхватит это при следующей загрузке страницы.");
+    say("Сохранено. Сайт рапортов подхватит изменения за несколько секунд.");
   } catch (e) { say(e.message, true); }
 }
 
@@ -229,7 +236,7 @@ async function renderOrders(){
   } catch (e) { say(e.message, true); return; }
   const rows = data.orders || [];
   $("orders").innerHTML = `<div class="card"><h2>Журнал приказов</h2>
-    <p class="hint">Удаление убирает запись из истории по паспорту. Следующий номер — это то, что получит новый приказ. Уже выданные номера сами не сдвигаются, их можно поправить в таблице.</p>
+    <p class="hint">Удаление убирает запись из истории по паспорту. Следующий номер — это то, что получит новый приказ. Уже выданные номера сами не сдвигаются и не меняются.</p>
     <div class="row">
       <div><label>Следующий номер</label><input id="nextNum" class="narrow" type="number" value="${seq.next}"></div>
       <button class="btn gold" type="button" id="saveSeq">Поставить номер</button>
@@ -253,7 +260,7 @@ async function renderOrders(){
 }
 function orderRow(o){
   return `<tr data-id="${o.id}">
-    <td><input class="num" value="${esc(o.num)}"></td>
+    <td class="num-text">${esc(o.num)}</td>
     <td><select class="kind"><option value="vyg"${o.kind !== "pred" ? " selected" : ""}>Выговор</option><option value="pred"${o.kind === "pred" ? " selected" : ""}>Предупреждение</option></select></td>
     <td><input class="passport" value="${esc(o.passport)}"></td>
     <td><input class="rank" value="${esc(o.rank || "")}" placeholder="звание"><input class="name" value="${esc(o.name || "")}" placeholder="имя"><input class="unit" value="${esc(o.unit || "")}" placeholder="подразделение"></td>
@@ -266,10 +273,10 @@ async function saveOrder(id){
   const tr = document.querySelector(`tr[data-id="${id}"]`);
   const rank = tr.querySelector(".rank").value.trim();
   const name = tr.querySelector(".name").value.trim();
+  const num = tr.querySelector(".num-text").textContent.trim();
   try {
     await api("PATCH", "/admin/orders", {
       id: Number(id),
-      num: tr.querySelector(".num").value.trim(),
       kind: tr.querySelector(".kind").value,
       passport: tr.querySelector(".passport").value,
       name, rank,
@@ -277,7 +284,7 @@ async function saveOrder(id){
       reason: tr.querySelector(".reason").value.trim(),
       issued: tr.querySelector(".issued").value.trim()
     });
-    say("Запись " + tr.querySelector(".num").value.trim() + " сохранена.");
+    say("Запись " + num + " сохранена.");
   } catch (e) { say(e.message, true); }
 }
 
@@ -293,6 +300,16 @@ function showTab(name){
 $("nav").onclick = e => { const b = e.target.closest("[data-tab]"); if (b) showTab(b.dataset.tab); };
 $("logout").onclick = () => { sessionStorage.removeItem("vp_admin"); location.reload(); };
 
+async function refreshGateStatus(){
+  try {
+    const g = await api("GET", "/admin/gate");
+    $("gateStatus").textContent = g.set
+      ? "Пароль отправки уже задан. Новый пароль заменит старый; текущий не показывается."
+      : "Пароль отправки ещё не задан — отправка с сайта закрыта, пока не поставишь.";
+  } catch (e) {
+    $("gateStatus").textContent = "Не удалось проверить пароль отправки: " + e.message;
+  }
+}
 async function boot(){
   $("login").hidden = true; $("app").hidden = false; $("nav").hidden = false;
   say("Загружаю…");
@@ -301,6 +318,7 @@ async function boot(){
     promo = rules.promo || await fileRules("PROMO");
     vyg = rules.vygovor || await fileRules("VYG");
     renderPromo(); renderVyg();
+    await refreshGateStatus();
     say(rules.promo ? "Правила из базы." : "В базе ещё пусто, показал то, что сейчас в файлах сайта. Нажми сохранить, чтобы править уже отсюда.");
   } catch (e) {
     $("login").hidden = false; $("app").hidden = true; $("nav").hidden = true;
@@ -309,6 +327,15 @@ async function boot(){
     sessionStorage.removeItem("vp_admin");
   }
 }
+$("setGate").onclick = async () => {
+  const password = $("gatePass").value;
+  try {
+    await api("PUT", "/admin/gate", { password });
+    $("gatePass").value = "";
+    await refreshGateStatus();
+    say("Пароль отправки сохранён.");
+  } catch (e) { say(e.message, true); }
+};
 $("enter").onclick = () => { sessionStorage.setItem("vp_admin", $("pass").value.trim()); boot(); };
 $("pass").addEventListener("keydown", e => { if (e.key === "Enter") $("enter").click(); });
 if (token()) boot();
