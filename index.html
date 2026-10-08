@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Админка ГУ ВП</title>
+<style>
+  :root { --bg:#121614; --card:#1c2320; --line:#31403a; --gold:#e7c75a; --ink:#f3f0e6; --muted:#b7b1a1; --bad:#c4524a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 "Segoe UI", sans-serif; }
+  header { display:flex; align-items:center; gap:16px; padding:14px 22px; border-bottom:2px solid var(--gold); }
+  h1 { margin:0; font-size:18px; letter-spacing:1px; }
+  h1 span { color:var(--gold); }
+  nav { display:flex; gap:8px; margin-left:auto; }
+  nav button, .btn { background:#24302b; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:8px 12px; cursor:pointer; }
+  nav button.on { border-color:var(--gold); color:var(--gold); }
+  main { max-width:1100px; margin:0 auto; padding:18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; margin:0 0 12px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:8px 0 4px; }
+  input, textarea, select { width:100%; background:#0e1311; color:var(--ink); border:1px solid var(--line); border-radius:5px; padding:7px 8px; font:inherit; }
+  textarea { min-height:88px; resize:vertical; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:6px 4px; vertical-align:top; border-bottom:1px solid #2a3530; }
+  th { color:var(--muted); font-size:12px; font-weight:600; }
+  .row { display:flex; gap:8px; align-items:end; flex-wrap:wrap; }
+  .row > * { flex:1; min-width:120px; }
+  .narrow { max-width:110px; }
+  .btn.gold { background:#6a5414; border-color:var(--gold); }
+  .btn.bad { border-color:var(--bad); color:#ffb4ae; }
+  .status { min-height:22px; margin:8px 0; color:var(--gold); }
+  .status.err { color:#ff8d84; }
+  .login { max-width:420px; margin:12vh auto; }
+  .hint { color:var(--muted); font-size:13px; }
+  .need { display:flex; gap:6px; margin-top:6px; }
+  .step { border-top:1px solid #2a3530; padding-top:10px; margin-top:10px; }
+  .chk { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--ink); }
+  .chk input { width:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>ГУ ВП</span> · админка</h1>
+  <nav id="nav" hidden>
+    <button type="button" data-tab="promo" class="on">Повышение</button>
+    <button type="button" data-tab="vyg">Выговоры</button>
+    <button type="button" data-tab="orders">Приказы</button>
+    <button type="button" id="logout">Выйти</button>
+  </nav>
+</header>
+<main>
+  <section id="login" class="card login">
+    <h2>Вход</h2>
+    <p class="hint">Панель отдельно от сайта рапортов. Пароль хранится только в этой вкладке.</p>
+    <label>Пароль</label>
+    <input id="pass" type="password" autocomplete="current-password">
+    <div class="row" style="margin-top:12px"><button class="btn gold" id="enter" type="button">Войти</button></div>
+    <div class="status" id="loginStatus"></div>
+  </section>
+  <section id="app" hidden>
+    <div class="status" id="status"></div>
+    <div id="promo"></div>
+    <div id="vyg" hidden></div>
+    <div id="orders" hidden></div>
+  </section>
+</main>
+<script>
+const API = "https://curly-disk-ebd7.reflektpro8.workers.dev";
+const SITE = "https://reflektpro.github.io/vp-raport/";
+const $ = id => document.getElementById(id);
+let promo = null, vyg = null;
+
+function token(){ return sessionStorage.getItem("vp_admin") || ""; }
+function say(text, err){ const s = $("status"); s.textContent = text || ""; s.className = "status" + (err ? " err" : ""); }
+async function api(method, path, body){
+  const res = await fetch(API + path, {
+    method,
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token() },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const text = await res.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { error: text }; }
+  if (res.status === 401) throw new Error("Пароль не подошёл");
+  if (!res.ok) throw new Error(data.error || text || "Ошибка");
+  return data;
+}
+async function fileRules(name){
+  const src = await (await fetch(SITE + (name === "PROMO" ? "promo-rules.js" : "vygovor-rules.js"))).text();
+  const box = {};
+  new Function("window", src)(box);
+  return box[name];
+}
+
+function lines(arr){ return (arr || []).join("\n"); }
+function splitLines(text){ return String(text || "").split(/\n+/).map(s => s.trim()).filter(Boolean); }
+function slug(s){ return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 16) || "act"; }
+
+function renderPromo(){
+  const acts = promo.acts || [];
+  const ladder = Object.entries(promo.ladder || {});
+  $("promo").innerHTML = `
+    <div class="card">
+      <h2>Баллы и активности</h2>
+      <p class="hint">Ключ лучше не трогать: на него опираются отчёт и калькулятор. «Разовое» нельзя закрыть баллами.</p>
+      <label>Сколько баллов заменяют один недостающий пункт</label>
+      <input id="ppi" class="narrow" type="number" value="${Number(promo.pointsPerItem) || 0}">
+      <table><thead><tr><th>Ключ</th><th>Название</th><th>Баллы</th><th>Как пишется в рапорте</th><th>Разовое</th><th></th></tr></thead>
+      <tbody id="acts">${acts.map(actRow).join("")}</tbody></table>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" type="button" id="addAct">Добавить активность</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Ступени повышения</h2>
+      <div id="ladder">${ladder.map(([from, step]) => stepRow(from, step)).join("")}</div>
+      <button class="btn" type="button" id="addStep">Добавить ступень</button>
+    </div>
+    <button class="btn gold" type="button" id="saveRules">Сохранить повышение и выговоры</button>
+    <button class="btn" type="button" id="reloadFiles">Вернуть как на сайте сейчас в файлах</button>`;
+  $("addAct").onclick = () => { readPromo(); promo.acts.push({ key: "act" + (promo.acts.length + 1), name: "Новая", pts: 0, doc: "", once: false }); renderPromo(); };
+  $("addStep").onclick = () => { readPromo(); promo.ladder["Новое звание"] = { to: "", points: 0, need: {} }; renderPromo(); };
+  $("saveRules").onclick = saveRules;
+  $("reloadFiles").onclick = async () => { try { promo = await fileRules("PROMO"); vyg = await fileRules("VYG"); renderPromo(); renderVyg(); say("Подставил правила из файлов сайта. Сохрани, если так и надо."); } catch (e) { say(e.message, true); } };
+  document.querySelectorAll(".del-act").forEach(b => b.onclick = () => { readPromo(); promo.acts.splice(Number(b.dataset.i), 1); renderPromo(); });
+  document.querySelectorAll(".del-step").forEach(b => b.onclick = () => { const from = b.closest(".step").querySelector(".from").value.trim(); readPromo(); delete promo.ladder[from]; renderPromo(); });
+  document.querySelectorAll(".add-need").forEach(b => b.onclick = () => {
+    const from = b.closest(".step").querySelector(".from").value.trim();
+    readPromo();
+    const step = promo.ladder[from];
+    const key = (promo.acts[0] && promo.acts[0].key) || "training";
+    if (step) step.need[key] = (step.need[key] || 0) + 1;
+    renderPromo();
+  });
+}
+function actOptions(selected){
+  return (promo.acts || []).map(a => `<option value="${esc(a.key)}"${a.key === selected ? " selected" : ""}>${esc(a.name)}</option>`).join("");
+}
+function actRow(a, i){
+  return `<tr data-i="${i}"><td><input class="key" value="${esc(a.key)}"></td><td><input class="name" value="${esc(a.name)}"></td><td><input class="pts narrow" type="number" value="${Number(a.pts) || 0}"></td><td><input class="doc" value="${esc(a.doc || "")}"></td><td><label class="chk"><input class="once" type="checkbox"${a.once ? " checked" : ""}> да</label></td><td><button class="btn bad del-act" type="button" data-i="${i}">Убрать</button></td></tr>`;
+}
+function stepRow(from, step){
+  const needs = Object.entries(step.need || {});
+  return `<div class="step" data-from="${esc(from)}">
+    <div class="row">
+      <div><label>С звания</label><input class="from" value="${esc(from)}"></div>
+      <div><label>На звание</label><input class="to" value="${esc(step.to || "")}"></div>
+      <div><label>Баллов набрать</label><input class="points narrow" type="number" value="${Number(step.points) || 0}"></div>
+      <button class="btn bad del-step" type="button" data-from="${esc(from)}">Убрать ступень</button>
+    </div>
+    ${needs.map(([k, n]) => `<div class="need"><select class="need-key">${actOptions(k)}</select><input class="need-n narrow" type="number" value="${Number(n) || 0}"><span class="hint">раз</span></div>`).join("")}
+    <button class="btn add-need" type="button" data-from="${esc(from)}" style="margin-top:6px">Добавить требование</button>
+  </div>`;
+}
+function readPromo(){
+  const acts = [...document.querySelectorAll("#acts tr")].map(tr => ({
+    key: tr.querySelector(".key").value.trim() || slug(tr.querySelector(".name").value),
+    name: tr.querySelector(".name").value.trim(),
+    pts: Number(tr.querySelector(".pts").value) || 0,
+    doc: tr.querySelector(".doc").value.trim(),
+    once: tr.querySelector(".once").checked
+  }));
+  const ladder = {};
+  document.querySelectorAll("#ladder .step").forEach(box => {
+    const from = box.querySelector(".from").value.trim();
+    if (!from) return;
+    const need = {};
+    const keys = [...box.querySelectorAll(".need-key")];
+    const nums = [...box.querySelectorAll(".need-n")];
+    keys.forEach((sel, i) => { const n = Number(nums[i].value) || 0; if (sel.value && n > 0) need[sel.value] = n; });
+    ladder[from] = { to: box.querySelector(".to").value.trim(), points: Number(box.querySelector(".points").value) || 0, need };
+  });
+  promo = { pointsPerItem: Number($("ppi").value) || 0, acts, ladder };
+}
+function esc(s){ return String(s ?? "").replace(/[&<>"]/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[ch])); }
+
+function renderVyg(){
+  const units = (vyg && vyg.units) || [];
+  $("vyg").innerHTML = `<div class="card"><h2>Отработки по подразделениям</h2>
+    <p class="hint">Каждый пункт с новой строки. В приказ попадают все строки сразу. Для академии отдельно задаётся норма рядового.</p>
+    <div id="units">${units.map(unitCard).join("")}</div>
+    <button class="btn" type="button" id="addUnit">Добавить подразделение</button>
+    <button class="btn gold" type="button" id="saveRules2">Сохранить повышение и выговоры</button></div>`;
+  $("addUnit").onclick = () => { readVyg(); vyg.units.push({ id: "u" + (vyg.units.length + 1), name: "Новое подразделение", pred: [], vyg: [] }); renderVyg(); };
+  $("saveRules2").onclick = saveRules;
+  document.querySelectorAll(".del-unit").forEach(b => b.onclick = () => { readVyg(); vyg.units.splice(Number(b.dataset.i), 1); renderVyg(); });
+}
+function unitCard(u, i){
+  const priv = u.id === "va" || u.predPrivate || u.vygPrivate;
+  return `<div class="step" data-i="${i}">
+    <div class="row"><div><label>Название</label><input class="uname" value="${esc(u.name)}"></div><div><label>Код</label><input class="uid" value="${esc(u.id)}"></div><button class="btn bad del-unit" type="button" data-i="${i}">Убрать</button></div>
+    <label>Предупреждение</label><textarea class="pred">${esc(lines(u.pred))}</textarea>
+    <label>Выговор</label><textarea class="vyg">${esc(lines(u.vyg))}</textarea>
+    ${priv ? `<label>Рядовой, предупреждение</label><textarea class="predPrivate">${esc(lines(u.predPrivate))}</textarea><label>Рядовой, выговор</label><textarea class="vygPrivate">${esc(lines(u.vygPrivate))}</textarea>` : ""}
+  </div>`;
+}
+function readVyg(){
+  const units = [...document.querySelectorAll("#units .step")].map(box => {
+    const u = {
+      id: box.querySelector(".uid").value.trim() || slug(box.querySelector(".uname").value),
+      name: box.querySelector(".uname").value.trim(),
+      pred: splitLines(box.querySelector(".pred").value),
+      vyg: splitLines(box.querySelector(".vyg").value)
+    };
+    const pp = box.querySelector(".predPrivate");
+    const vp = box.querySelector(".vygPrivate");
+    if (pp) u.predPrivate = splitLines(pp.value);
+    if (vp) u.vygPrivate = splitLines(vp.value);
+    return u;
+  });
+  vyg = { units };
+}
+
+async function saveRules(){
+  try {
+    readPromo(); readVyg();
+    await api("PUT", "/admin/rules", { promo, vygovor: vyg });
+    say("Сохранено. Сайт рапортов подхватит это при следующей загрузке страницы.");
+  } catch (e) { say(e.message, true); }
+}
+
+async function renderOrders(){
+  const passport = ($("q") && $("q").value.trim()) || "";
+  let data, seq;
+  try {
+    [data, seq] = await Promise.all([
+      api("GET", "/admin/orders" + (passport ? "?passport=" + encodeURIComponent(passport.replace(/\D/g, "")) : "")),
+      api("GET", "/admin/seq")
+    ]);
+  } catch (e) { say(e.message, true); return; }
+  const rows = data.orders || [];
+  $("orders").innerHTML = `<div class="card"><h2>Журнал приказов</h2>
+    <p class="hint">Удаление убирает запись из истории по паспорту. Следующий номер — это то, что получит новый приказ. Уже выданные номера сами не сдвигаются, их можно поправить в таблице.</p>
+    <div class="row">
+      <div><label>Следующий номер</label><input id="nextNum" class="narrow" type="number" value="${seq.next}"></div>
+      <button class="btn gold" type="button" id="saveSeq">Поставить номер</button>
+      <div><label>Паспорт, только цифры</label><input id="q" value="${esc(passport)}" placeholder="все"></div>
+      <button class="btn" type="button" id="find">Найти</button>
+    </div>
+    <p class="hint">Сейчас занято до ${seq.last}. Следующий будет ${seq.next}.</p>
+    <table><thead><tr><th>Номер</th><th>Вид</th><th>Паспорт</th><th>Кому</th><th>Причина</th><th>Дата</th><th></th></tr></thead>
+    <tbody>${rows.map(orderRow).join("") || `<tr><td colspan="7" class="hint">Записей нет</td></tr>`}</tbody></table></div>`;
+  $("saveSeq").onclick = async () => {
+    try { await api("POST", "/admin/seq", { next: Number($("nextNum").value) }); say("Следующий номер обновлён."); renderOrders(); }
+    catch (e) { say(e.message, true); }
+  };
+  $("find").onclick = renderOrders;
+  document.querySelectorAll(".save-order").forEach(b => b.onclick = () => saveOrder(b.dataset.id));
+  document.querySelectorAll(".del-order").forEach(b => b.onclick = async () => {
+    if (!confirm("Удалить приказ " + b.dataset.num + "?")) return;
+    try { await api("DELETE", "/admin/orders?id=" + b.dataset.id); say("Удалил."); renderOrders(); }
+    catch (e) { say(e.message, true); }
+  });
+}
+function orderRow(o){
+  return `<tr data-id="${o.id}">
+    <td><input class="num" value="${esc(o.num)}"></td>
+    <td><select class="kind"><option value="vyg"${o.kind !== "pred" ? " selected" : ""}>Выговор</option><option value="pred"${o.kind === "pred" ? " selected" : ""}>Предупреждение</option></select></td>
+    <td><input class="passport" value="${esc(o.passport)}"></td>
+    <td><input class="rank" value="${esc(o.rank || "")}" placeholder="звание"><input class="name" value="${esc(o.name || "")}" placeholder="имя"><input class="unit" value="${esc(o.unit || "")}" placeholder="подразделение"></td>
+    <td><input class="reason" value="${esc(o.reason || "")}" placeholder="6.1"></td>
+    <td><input class="issued" value="${esc(o.issued || "")}"></td>
+    <td><button class="btn save-order" type="button" data-id="${o.id}">Сохранить</button><button class="btn bad del-order" type="button" data-id="${o.id}" data-num="${esc(o.num)}">Удалить</button></td>
+  </tr>`;
+}
+async function saveOrder(id){
+  const tr = document.querySelector(`tr[data-id="${id}"]`);
+  const rank = tr.querySelector(".rank").value.trim();
+  const name = tr.querySelector(".name").value.trim();
+  try {
+    await api("PATCH", "/admin/orders", {
+      id: Number(id),
+      num: tr.querySelector(".num").value.trim(),
+      kind: tr.querySelector(".kind").value,
+      passport: tr.querySelector(".passport").value,
+      name, rank,
+      unit: tr.querySelector(".unit").value.trim(),
+      reason: tr.querySelector(".reason").value.trim(),
+      issued: tr.querySelector(".issued").value.trim()
+    });
+    say("Запись " + tr.querySelector(".num").value.trim() + " сохранена.");
+  } catch (e) { say(e.message, true); }
+}
+
+function showTab(name){
+  if (!$("promo").hidden && name !== "promo" && promo) readPromo();
+  if (!$("vyg").hidden && name !== "vyg" && vyg) readVyg();
+  ["promo","vyg","orders"].forEach(id => $(id).hidden = id !== name);
+  document.querySelectorAll("#nav [data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
+  if (name === "orders") renderOrders();
+  if (name === "vyg") renderVyg();
+  if (name === "promo") renderPromo();
+}
+$("nav").onclick = e => { const b = e.target.closest("[data-tab]"); if (b) showTab(b.dataset.tab); };
+$("logout").onclick = () => { sessionStorage.removeItem("vp_admin"); location.reload(); };
+
+async function boot(){
+  $("login").hidden = true; $("app").hidden = false; $("nav").hidden = false;
+  say("Загружаю…");
+  try {
+    const rules = await api("GET", "/admin/rules");
+    promo = rules.promo || await fileRules("PROMO");
+    vyg = rules.vygovor || await fileRules("VYG");
+    renderPromo(); renderVyg();
+    say(rules.promo ? "Правила из базы." : "В базе ещё пусто, показал то, что сейчас в файлах сайта. Нажми сохранить, чтобы править уже отсюда.");
+  } catch (e) {
+    $("login").hidden = false; $("app").hidden = true; $("nav").hidden = true;
+    $("loginStatus").textContent = e.message;
+    $("loginStatus").className = "status err";
+    sessionStorage.removeItem("vp_admin");
+  }
+}
+$("enter").onclick = () => { sessionStorage.setItem("vp_admin", $("pass").value.trim()); boot(); };
+$("pass").addEventListener("keydown", e => { if (e.key === "Enter") $("enter").click(); });
+if (token()) boot();
+</script>
+</body>
+</html>
