@@ -35,6 +35,8 @@
   .step { border-top:1px solid #2a3530; padding-top:10px; margin-top:10px; }
   .chk { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--ink); }
   .chk input { width:auto; }
+  .scroll { overflow:auto; }
+  h3 { margin:16px 0 8px; font-size:15px; }
 </style>
 </head>
 <body>
@@ -44,6 +46,7 @@
     <button type="button" data-tab="promo" class="on">Повышение</button>
     <button type="button" data-tab="vyg">Выговоры</button>
     <button type="button" data-tab="orders">Приказы</button>
+    <button type="button" data-tab="who">Кто отправил</button>
     <button type="button" id="logout">Выйти</button>
   </nav>
 </header>
@@ -58,16 +61,10 @@
   </section>
   <section id="app" hidden>
     <div class="status" id="status"></div>
-    <div class="card" id="gateCard">
-      <h2>Пароль отправки</h2>
-      <p class="hint" id="gateStatus">Проверяю…</p>
-      <label>Новый пароль отправки</label>
-      <input id="gatePass" type="password" autocomplete="off">
-      <div class="row" style="margin-top:10px"><button class="btn gold" type="button" id="setGate">Поставить пароль</button></div>
-    </div>
     <div id="promo"></div>
     <div id="vyg" hidden></div>
     <div id="orders" hidden></div>
+    <div id="who" hidden></div>
   </section>
 </main>
 <script>
@@ -291,25 +288,51 @@ async function saveOrder(id){
 function showTab(name){
   if (!$("promo").hidden && name !== "promo" && promo) readPromo();
   if (!$("vyg").hidden && name !== "vyg" && vyg) readVyg();
-  ["promo","vyg","orders"].forEach(id => $(id).hidden = id !== name);
+  ["promo","vyg","orders","who"].forEach(id => $(id).hidden = id !== name);
   document.querySelectorAll("#nav [data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
   if (name === "orders") renderOrders();
   if (name === "vyg") renderVyg();
   if (name === "promo") renderPromo();
+  if (name === "who") renderWho();
+}
+function msk(ts){
+  const n = Number(ts);
+  if (!n) return "";
+  return new Date(n * 1000).toLocaleString("ru-RU", { timeZone: "Europe/Moscow", hour12: false });
+}
+const ACT = { paper: "бланк", order: "приказ", send: "отправка" };
+async function renderWho(){
+  let audit, bans;
+  try {
+    [audit, bans] = await Promise.all([api("GET", "/admin/audit"), api("GET", "/admin/bans")]);
+  } catch (e) { say(e.message, true); return; }
+  const rows = audit.rows || [];
+  const list = bans.bans || [];
+  $("who").innerHTML = `<div class="card"><h2>Кто отправил</h2>
+    <p class="hint">Время московское. Бан закрывает вход и отправку для этого Discord, уже выданные номера не трогает.</p>
+    <h3>Закрыт доступ</h3>
+    <table><thead><tr><th>Время</th><th>Имя</th><th>Discord id</th><th></th></tr></thead>
+    <tbody>${list.map(b => `<tr><td>${esc(msk(b.created))}</td><td>${esc(b.username || "")}</td><td>${esc(b.discord_id)}</td><td><button class="btn unban" type="button" data-id="${esc(b.discord_id)}">Разбанить</button></td></tr>`).join("") || `<tr><td colspan="4" class="hint">Никого</td></tr>`}</tbody></table>
+    <h3>Журнал</h3>
+    <div class="scroll"><table><thead><tr><th>Время</th><th>Discord</th><th>id</th><th>Действие</th><th>Вид</th><th>Номер</th><th></th></tr></thead>
+    <tbody>${rows.map(r => `<tr><td>${esc(msk(r.ts))}</td><td>${esc(r.discord_name || "")}</td><td>${esc(r.discord_id || "")}</td><td>${esc(ACT[r.action] || r.action || "")}</td><td>${esc(r.kind || "")}</td><td>${esc(r.num || "")}</td><td>${r.discord_id ? `<button class="btn bad ban" type="button" data-id="${esc(r.discord_id)}" data-name="${esc(r.discord_name || "")}">Бан</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="7" class="hint">Записей нет</td></tr>`}</tbody></table></div></div>`;
+  document.querySelectorAll(".ban").forEach(b => b.onclick = async () => {
+    const id = b.dataset.id;
+    const name = b.dataset.name || id;
+    if (!confirm("Закрыть доступ " + name + " (" + id + ")?")) return;
+    try { await api("POST", "/admin/ban", { discordId: id }); say("Доступ закрыт."); renderWho(); }
+    catch (e) { say(e.message, true); }
+  });
+  document.querySelectorAll(".unban").forEach(b => b.onclick = async () => {
+    const id = b.dataset.id;
+    if (!confirm("Разбанить " + id + "?")) return;
+    try { await api("DELETE", "/admin/ban?id=" + encodeURIComponent(id)); say("Снова можно входить."); renderWho(); }
+    catch (e) { say(e.message, true); }
+  });
 }
 $("nav").onclick = e => { const b = e.target.closest("[data-tab]"); if (b) showTab(b.dataset.tab); };
 $("logout").onclick = () => { sessionStorage.removeItem("vp_admin"); location.reload(); };
 
-async function refreshGateStatus(){
-  try {
-    const g = await api("GET", "/admin/gate");
-    $("gateStatus").textContent = g.set
-      ? "Пароль отправки уже задан. Новый пароль заменит старый; текущий не показывается."
-      : "Пароль отправки ещё не задан — отправка с сайта закрыта, пока не поставишь.";
-  } catch (e) {
-    $("gateStatus").textContent = "Не удалось проверить пароль отправки: " + e.message;
-  }
-}
 async function boot(){
   $("login").hidden = true; $("app").hidden = false; $("nav").hidden = false;
   say("Загружаю…");
@@ -318,7 +341,6 @@ async function boot(){
     promo = rules.promo || await fileRules("PROMO");
     vyg = rules.vygovor || await fileRules("VYG");
     renderPromo(); renderVyg();
-    await refreshGateStatus();
     say(rules.promo ? "Правила из базы." : "В базе ещё пусто, показал то, что сейчас в файлах сайта. Нажми сохранить, чтобы править уже отсюда.");
   } catch (e) {
     $("login").hidden = false; $("app").hidden = true; $("nav").hidden = true;
@@ -327,15 +349,6 @@ async function boot(){
     sessionStorage.removeItem("vp_admin");
   }
 }
-$("setGate").onclick = async () => {
-  const password = $("gatePass").value;
-  try {
-    await api("PUT", "/admin/gate", { password });
-    $("gatePass").value = "";
-    await refreshGateStatus();
-    say("Пароль отправки сохранён.");
-  } catch (e) { say(e.message, true); }
-};
 $("enter").onclick = () => { sessionStorage.setItem("vp_admin", $("pass").value.trim()); boot(); };
 $("pass").addEventListener("keydown", e => { if (e.key === "Enter") $("enter").click(); });
 if (token()) boot();
